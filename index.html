@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Safe Zone - Co-Op Troll Platformer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0f0f13;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #fff;
+            overflow: hidden;
+        }
+        #gameTitle {
+            font-size: 32px;
+            font-weight: bold;
+            color: #00ffcc;
+            text-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+            margin-bottom: 15px;
+            letter-spacing: 4px;
+        }
+        #gameContainer {
+            box-shadow: 0 0 30px rgba(0, 255, 204, 0.2);
+            border: 2px solid #334455;
+            border-radius: 6px;
+            overflow: hidden;
+            background: #111622;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+<div id="gameTitle">SAFE ZONE: CO-OP</div>
+<div id="gameContainer">
+    <canvas id="safeZoneCanvas" width="800" height="600"></canvas>
+</div>
+
+<script>
+const canvas = document.getElementById("safeZoneCanvas");
+const ctx = canvas.getContext("2d");
+
+// Physics Constants
+const gravityStandard = 0.6;
+const gravityGlide = 0.15;
+
+// Key Listener State Array
+const keys = {};
+window.addEventListener('keydown', (e) => { 
+    if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) {
+        e.preventDefault();
+    }
+    keys[e.code] = true; 
+    handleInputTriggers(e.code); 
+});
+window.addEventListener('keyup', (e) => { 
+    keys[e.code] = false; 
+});
+
+// Character Stat System
+const PROFILE_DATA = {
+    Nessy: { speed: 5, jumpForce: -15, ability: "High Jump", color: "#ff4444" },
+    Pip: { speed: 5, jumpForce: -11, ability: "Hold Jump to Glide", color: "#ffff44" },
+    Penny: { speed: 8, jumpForce: -11, ability: "Fast Runner", color: "#44ff44" }
+};
+const namesList = Object.keys(PROFILE_DATA);
+
+// Multiplayer Control Mappings (Max 3 Players)
+const PLAYER_CONTROLS = [
+    { label: "P1 (WASD)", left: "KeyA", right: "KeyD", jump: "KeyW" },
+    { label: "P2 (Arrows)", left: "ArrowLeft", right: "ArrowRight", jump: "ArrowUp" },
+    { label: "P3 (IJL)", left: "KeyJ", right: "KeyL", jump: "KeyI" }
+];
+
+// State Machines
+let currentScene = "MENU"; 
+let activeZone = 1;
+const TOTAL_ZONES = 4;
+
+// Multiplayer Selection State
+let numPlayers = 1;
+let pickingPlayerIdx = 0;
+let selectedHeroIndex = 0;
+let chosenHeroes = [];
+
+// Active Entities
+let players = [];
+let structuralFloors = [];
+let structuralSpikes = [];
+let clearGate = { x: 0, y: 0, w: 45, h: 65 };
+let zoneDirective = "";
+
+// Zone 3 & 4 Troll States
+let surpriseSpike = null;
+let gateTriggered = false;
+let gateTargetX = 0;
+
+function generateZone(zoneNum) {
+    structuralFloors = [];
+    structuralSpikes = [];
+    surpriseSpike = null;
+    gateTriggered = false;
+
+    // Spawn all active players side-by-side at the start
+    players = chosenHeroes.map((heroName, index) => ({
+        id: index + 1,
+        hero: heroName,
+        controls: PLAYER_CONTROLS[index],
+        x: 30 + (index * 48),
+        y: 400,
+        w: 36,
+        h: 36,
+        vx: 0,
+        vy: 0,
+        grounded: false
+    }));
+
+    if (zoneNum === 1) {
+        zoneDirective = "ZONE 1: Work Together & Leap the Spike (All Players Must Reach Gate)";
+        structuralFloors.push({ x: 0, y: 500, w: 450, h: 100 });
+        structuralFloors.push({ x: 490, y: 500, w: 310, h: 100 });
+        structuralSpikes.push({ x: 455, y: 472, w: 28, h: 28 });
+        clearGate.x = 730; clearGate.y = 435;
+
+    } else if (zoneNum === 2) {
+        zoneDirective = "ZONE 2: Clear the Bottomless Pit & Island Spike!";
+        structuralFloors.push({ x: 0, y: 500, w: 230, h: 100 });
+        structuralFloors.push({ x: 390, y: 500, w: 200, h: 100 });
+        structuralSpikes.push({ x: 475, y: 472, w: 28, h: 28 });
+        structuralFloors.push({ x: 660, y: 430, w: 140, h: 170 });
+        clearGate.x = 735; clearGate.y = 365;
+
+    } else if (zoneNum === 3) {
+        zoneDirective = "ZONE 3: Looks Too Easy... Watch Your Step!";
+        structuralFloors.push({ x: 0, y: 500, w: 260, h: 100 });
+        structuralFloors.push({ x: 340, y: 450, w: 150, h: 150 });
+        structuralFloors.push({ x: 560, y: 450, w: 240, h: 150 });
+        
+        // Hidden spike buried inside the final floor until someone gets close
+        surpriseSpike = {
+            x: 645,
+            y: 450,         // Hidden below floor surface (450)
+            targetY: 422,   // Pops up to 422
+            triggerX: 590,  // Triggers when a player crosses X = 590
+            w: 28,
+            h: 28,
+            triggered: false
+        };
+
+        clearGate.x = 735; clearGate.y = 385;
+
+    } else if (zoneNum === 4) {
+        zoneDirective = "ZONE 4: Almost Home! Everyone to the Exit!";
+        structuralFloors.push({ x: 0, y: 500, w: 220, h: 100 });
+        structuralFloors.push({ x: 310, y: 440, w: 150, h: 160 });
+        structuralFloors.push({ x: 550, y: 380, w: 250, h: 220 });
+        structuralSpikes.push({ x: 370, y: 412, w: 28, h: 28 });
+
+        clearGate.x = 730;
+        clearGate.y = 315;
+        gateTargetX = 35; // Where the door runs away to!
+    }
+}
+
+function handleInputTriggers(code) {
+    if (currentScene === "MENU") {
+        // Choose number of players (1-3) before picking heroes
+        if (pickingPlayerIdx === 0 && chosenHeroes.length === 0) {
+            if (code === "Digit1" || code === "Numpad1") numPlayers = 1;
+            if (code === "Digit2" || code === "Numpad2") numPlayers = 2;
+            if (code === "Digit3" || code === "Numpad3") numPlayers = 3;
+        }
+
+        if (code === "ArrowLeft" || code === "KeyA") {
+            selectedHeroIndex = (selectedHeroIndex - 1 + namesList.length) % namesList.length;
+        }
+        if (code === "ArrowRight" || code === "KeyD") {
+            selectedHeroIndex = (selectedHeroIndex + 1) % namesList.length;
+        }
+        if (code === "Enter" || code === "Space") {
+            chosenHeroes.push(namesList[selectedHeroIndex]);
+            pickingPlayerIdx++;
+
+            if (pickingPlayerIdx >= numPlayers) {
+                activeZone = 1;
+                generateZone(activeZone);
+                currentScene = "IN_GAME";
+            }
+        }
+    } else if (currentScene === "IN_GAME") {
+        if (code === "KeyR") generateZone(activeZone); 
+
+        // Check Jump Trigger for each player independently
+        for (let p of players) {
+            if (code === p.controls.jump && p.grounded) {
+                p.vy = PROFILE_DATA[p.hero].jumpForce;
+                p.grounded = false;
+            }
+        }
+    } else if (currentScene === "GAME_OVER_WIN") {
+        if (code === "Enter" || code === "Space") {
+            pickingPlayerIdx = 0;
+            chosenHeroes = [];
+            currentScene = "MENU";
+        }
+    }
+}
+
+function hitboxesOverlapping(objA, objB) {
+    return objA.x < objB.x + objB.w &&
+           objA.x + objA.w > objB.x &&
+           objA.y < objB.y + objB.h &&
+           objA.y + objA.h > objB.y;
+}
+
+function updateLogic() {
+    if (currentScene !== "IN_GAME") return;
+
+    let playersAtGate = 0;
+
+    for (let p of players) {
+        const stats = PROFILE_DATA[p.hero];
+
+        // Horizontal Movement
+        p.vx = 0;
+        if (keys[p.controls.left]) p.vx = -stats.speed;
+        if (keys[p.controls.right]) p.vx = stats.speed;
+
+        // Gravity & Pip's Glide Ability
+        let fallGravity = gravityStandard;
+        if (p.hero === "Pip" && p.vy > 0 && keys[p.controls.jump]) {
+            fallGravity = gravityGlide;
+        }
+        p.vy += fallGravity;
+
+        // Apply Horizontal & Screen Boundaries
+        p.x += p.vx;
+        if (p.x < 0) p.x = 0;
+        if (p.x + p.w > canvas.width) p.x = canvas.width - p.w;
+
+        for (let floor of structuralFloors) {
+            if (hitboxesOverlapping(p, floor)) {
+                if (p.vx > 0) p.x = floor.x - p.w;
+                if (p.vx < 0) p.x = floor.x + floor.w;
+            }
+        }
+
+        // Apply Vertical
+        p.y += p.vy;
+        p.grounded = false;
+        for (let floor of structuralFloors) {
+            if (hitboxesOverlapping(p, floor)) {
+                if (p.vy > 0) {
+                    p.y = floor.y - p.h;
+                    p.vy = 0;
+                    p.grounded = true;
+                } else if (p.vy < 0) {
+                    p.y = floor.y + floor.h;
+                    p.vy = 0;
+                }
+            }
+        }
+
+        // Death Check 1: Pit Fall (Resets everyone!)
+        if (p.y > canvas.height) {
+            generateZone(activeZone);
+            return;
+        }
+
+        // Death Check 2: Static Spikes (Slightly forgiving hitbox)
+        for (let spike of structuralSpikes) {
+            let forgivingSpike = { x: spike.x + 4, y: spike.y + 4, w: spike.w - 8, h: spike.h - 4 };
+            if (hitboxesOverlapping(p, forgivingSpike)) {
+                generateZone(activeZone);
+                return;
+            }
+        }
+
+        // Zone 3 Surprise Spike Trigger & Collision
+        if (surpriseSpike) {
+            if (!surpriseSpike.triggered && p.x + p.w > surpriseSpike.triggerX) {
+                surpriseSpike.triggered = true;
+            }
+            if (surpriseSpike.triggered) {
+                let forgivingSurprise = { x: surpriseSpike.x + 4, y: surpriseSpike.y + 4, w: surpriseSpike.w - 8, h: surpriseSpike.h - 4 };
+                if (hitboxesOverlapping(p, forgivingSurprise)) {
+                    generateZone(activeZone);
+                    return;
+                }
+            }
+        }
+
+        // Zone 4 Troll Door Trigger (Runs away when a player gets within 110px)
+if (activeZone === 4 && !gateTriggered && Math.abs(p.x - clearGate.x) < 110) {
+gateTriggered = true;
+zoneDirective = "ZONE 4: PSYCHE! Back to the start!";
+}
+// Check if this player is inside the Exit Gate
+if (hitboxesOverlapping(p, clearGate)) {
+playersAtGate++;
+}
+}
+// Animate Zone 3 Surprise Spike popping up
+if (surpriseSpike && surpriseSpike.triggered && surpriseSpike.y > surpriseSpike.targetY) {
+surpriseSpike.y -= 7;
+if (surpriseSpike.y < surpriseSpike.targetY) surpriseSpike.y = surpriseSpike.targetY;
+}
+// Animate Zone 4 Door sliding back to the beginning
+if (activeZone === 4 && gateTriggered) {
+if (clearGate.x > gateTargetX) {
+clearGate.x -= 9;
+if (clearGate.x < gateTargetX) clearGate.x = gateTargetX;
+}
+// Lower the door onto the starting platform height (500 - 65 = 435)
+if (clearGate.y < 435) {
+clearGate.y += 3;
+if (clearGate.y > 435) clearGate.y = 435;
+}
+}
+// Advance Zone only when ALL active players reach the gate
+if (playersAtGate === players.length) {
+if (activeZone < TOTAL_ZONES) {
+activeZone++;
+generateZone(activeZone);
+} else {
+currentScene = "GAME_OVER_WIN";
+}
+}
+}
+function drawSpike(spike) {
+ctx.fillStyle = "#ff4466";
+ctx.beginPath();
+ctx.moveTo(spike.x, spike.y + spike.h);
+ctx.lineTo(spike.x + spike.w / 2, spike.y);
+ctx.lineTo(spike.x + spike.w, spike.y + spike.h);
+ctx.fill();
+}
+function drawGraphics() {
+ctx.clearRect(0, 0, canvas.width, canvas.height);
+if (currentScene === "MENU") {
+ctx.fillStyle = "#111622";
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+ctx.fillStyle = "#00ffcc";
+ctx.font = "bold 24px monospace";
+ctx.textAlign = "center";
+ctx.fillText(`PLAYER ${pickingPlayerIdx + 1}: CHOOSE YOUR HERO`, canvas.width / 2, 85);
+ctx.fillStyle = "#ffffff";
+ctx.font = "15px monospace";
+ctx.fillText(`Squad Size: [ ${numPlayers} Player${numPlayers > 1 ? "s" : ""} ]  (Press 1, 2, or 3 to change)`, canvas.width / 2, 125);
+ctx.fillStyle = "#8899a6";
+ctx.font = "13px monospace";
+ctx.fillText("Navigate [A/D or Arrows] — Lock In [Enter or Space]", canvas.width / 2, 155);
+let bW = 190, bH = 240, startPointX = canvas.width / 2 - (3 * bW + 2 * 25) / 2;
+namesList.forEach((name, idx) => {
+let currentX = startPointX + idx * (bW + 25);
+let currentY = 200;
+ctx.fillStyle = "#1b2436";
+ctx.fillRect(currentX, currentY, bW, bH);
+if (idx === selectedHeroIndex) {
+ctx.strokeStyle = "#00ffcc";
+ctx.lineWidth = 3;
+} else {
+ctx.strokeStyle = "#384a66";
+ctx.lineWidth = 1;
+}
+ctx.strokeRect(currentX, currentY, bW, bH);
+ctx.fillStyle = PROFILE_DATA[name].color;
+ctx.fillRect(currentX + bW / 2 - 20, currentY + 40, 40, 40);
+ctx.fillStyle = "#ffffff";
+ctx.font = "bold 18px monospace";
+ctx.fillText(name, currentX + bW / 2, currentY + 125);
+ctx.fillStyle = "#00ffcc";
+ctx.font = "11px monospace";
+ctx.fillText(PROFILE_DATA[name].ability, currentX + bW / 2, currentY + 175);
+});
+// Show Control Legend at Bottom of Menu
+ctx.fillStyle = "#8899a6";
+ctx.font = "13px monospace";
+ctx.fillText("P1: W/A/D   |   P2: Arrow Keys   |   P3: I/J/L", canvas.width / 2, 510);
+} else if (currentScene === "IN_GAME") {
+ctx.fillStyle = "#161d29";
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+// Draw Surprise Spike BEFORE floors so it rises smoothly out of the floor
+if (surpriseSpike && surpriseSpike.triggered) {
+drawSpike(surpriseSpike);
+}
+// Draw Floors
+ctx.fillStyle = "#2c3b54";
+for (let floor of structuralFloors) {
+ctx.fillRect(floor.x, floor.y, floor.w, floor.h);
+ctx.fillStyle = "#00ffcc";
+ctx.fillRect(floor.x, floor.y, floor.w, 3);
+ctx.fillStyle = "#2c3b54";
+}
+// Draw Static Spikes
+for (let spike of structuralSpikes) {
+drawSpike(spike);
+}
+// Draw Exit Gate
+ctx.fillStyle = "rgba(0, 255, 204, 0.15)";
+ctx.fillRect(clearGate.x, clearGate.y, clearGate.w, clearGate.h);
+ctx.strokeStyle = "#00ffcc";
+ctx.lineWidth = 2;
+ctx.strokeRect(clearGate.x, clearGate.y, clearGate.w, clearGate.h);
+// Draw All Active Players with P1/P2/P3 tags
+for (let p of players) {
+ctx.fillStyle = PROFILE_DATA[p.hero].color;
+ctx.fillRect(p.x, p.y, p.w, p.h);
+ctx.fillStyle = "#ffffff";
+ctx.font = "bold 11px monospace";
+ctx.textAlign = "center";
+ctx.fillText(`P${p.id}`, p.x + p.w / 2, p.y - 6);
+}
+// Top HUD Bar
+ctx.fillStyle = "#0b0e14";
+ctx.fillRect(0, 0, canvas.width, 45);
+ctx.fillStyle = "#ffffff";
+ctx.font = "12px monospace";
+ctx.textAlign = "left";
+ctx.fillText(`${zoneDirective} | [R] Reset`, 15, 26);
+} else if (currentScene === "GAME_OVER_WIN") {
+ctx.fillStyle = "#0b0e14";
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+ctx.fillStyle = "#00ffcc";
+ctx.font = "bold 20px monospace";
+ctx.textAlign = "center";
+ctx.fillText("ALL SAFE ZONES SECURED! Squad Victory!", canvas.width / 2, canvas.height / 2 - 20);
+ctx.fillStyle = "#ffffff";
+ctx.font = "14px monospace";
+ctx.fillText("Press Space or Enter to return to Hero Choice Menu", canvas.width / 2, canvas.height / 2 + 25);
+}
+}
+function processFrame() {
+updateLogic();
+drawGraphics();
+requestAnimationFrame(processFrame);
+}
+processFrame();
+</script>
+
+</body>
+</html>
